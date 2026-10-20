@@ -42,6 +42,11 @@ const (
 
 	// dialTimeout bounds one accepted connection's dial to the peer.
 	dialTimeout = 30 * time.Second
+
+	// retiredListenerGrace keeps a replaced loopback listener accepting long
+	// enough for a concurrent StartForward caller that was handed its port to
+	// dial it. Every caller dials right after StartForward returns.
+	retiredListenerGrace = 30 * time.Second
 )
 
 type forward struct {
@@ -236,19 +241,36 @@ func Ping(token string, timeoutMs int) (int, error) {
 // whose token or remote port changed) together with its local port. reused
 // reports whether the forward existed before this call, so the caller knows
 // whether it needs the cold rendezvous or the reuse probe.
+//
+// CDXC:RemotePairing 2026-10-20 WHY:
+// A reused forward gets a fresh loopback listener every time. iOS reclaims an
+// idle app's listening sockets while it is suspended
+// (developer.apple.com/forums/thread/85038: accept fails with ECONNABORTED and
+// clients get ECONNREFUSED), while the tunnel comes back and answers the reuse
+// probe, so handing out the old port made every reconnect after a long stay in
+// the background fail with "SSH refused the connection" until the app was
+// killed. The listener is free to recreate; only the tunnel's rendezvous is
+// worth reusing. Go's Accept retries ECONNABORTED without checking for Close,
+// so a dead listener's death cannot be detected and its Close may never
+// return: listeners are always closed off the registry lock.
 func ensureForward(id, token string, remotePort int) (f *forward, port int, reused bool, err error) {
 	mu.Lock()
 	defer mu.Unlock()
-	if existing, ok := forwards[id]; ok {
-		if existing.token == token && existing.remotePort == remotePort {
-			return existing, existing.listener.Addr().(*net.TCPAddr).Port, true, nil
-		}
-		log.Printf("tailcat[%s]: token or remote port changed, replacing forward", id)
-		stopLocked(id)
-	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, 0, false, err
+	}
+	port = listener.Addr().(*net.TCPAddr).Port
+	if existing, ok := forwards[id]; ok {
+		if existing.token == token && existing.remotePort == remotePort {
+			old := existing.listener
+			existing.listener = listener
+			go acceptLoop(existing, listener)
+			time.AfterFunc(retiredListenerGrace, func() { _ = old.Close() })
+			return existing, port, true, nil
+		}
+		log.Printf("tailcat[%s]: token or remote port changed, replacing forward", id)
+		stopLocked(id)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	f = &forward{
@@ -268,8 +290,8 @@ func ensureForward(id, token string, remotePort int) (f *forward, port int, reus
 		cancel: cancel,
 	}
 	forwards[id] = f
-	go acceptLoop(f)
-	return f, listener.Addr().(*net.TCPAddr).Port, false, nil
+	go acceptLoop(f, listener)
+	return f, port, false, nil
 }
 
 // forwardLogf attributes the tailcat library's own log lines to one machine.
@@ -298,7 +320,7 @@ func stopLocked(id string) {
 	delete(forwards, id)
 	f.cancel()
 	close(f.closed)
-	_ = f.listener.Close()
+	go f.listener.Close()
 	// CDXC:RemotePairing 2026-09-14 WHY:
 	// A dead tunnel's WireGuard teardown must not hold the registry lock and block reconnects to every computer.
 	go f.client.Close()
@@ -308,9 +330,9 @@ func elapsed(start time.Time) time.Duration {
 	return time.Since(start).Round(time.Millisecond)
 }
 
-func acceptLoop(f *forward) {
+func acceptLoop(f *forward, listener net.Listener) {
 	for {
-		conn, err := f.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
