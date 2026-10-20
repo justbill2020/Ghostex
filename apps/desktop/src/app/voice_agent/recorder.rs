@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use super::audio::{AudioStartError, VoiceAudio};
+use super::audio::{AudioStartError, MICROPHONE_KEPT_STOPPING, VoiceAudio};
 use super::conversation::MAX_AUDIO_RESTARTS;
 
 const SAMPLE_RATE: u32 = 24_000;
@@ -95,6 +95,8 @@ pub(crate) struct ActiveRecording {
     writer: Option<std::thread::JoinHandle<u64>>,
     /// The microphone failed after it started (the error, once).
     failure: Arc<Mutex<Option<AudioStartError>>>,
+    /// The microphone gives only silence (a warning; the recording goes on).
+    silent: Arc<AtomicBool>,
 }
 
 impl ActiveRecording {
@@ -138,6 +140,7 @@ impl ActiveRecording {
         };
         let running: Arc<Mutex<Option<VoiceAudio>>> = Arc::new(Mutex::new(None));
         let failure: Arc<Mutex<Option<AudioStartError>>> = Arc::new(Mutex::new(None));
+        let silent = Arc::new(AtomicBool::new(false));
         // The first start is waited for, so a refused microphone is reported at once; restarts
         // (Bluetooth earbuds switching profile stop the engine) happen on the same thread.
         let (first, first_result) = std::sync::mpsc::channel::<Result<(), AudioStartError>>();
@@ -145,6 +148,7 @@ impl ActiveRecording {
             let running = running.clone();
             let stopped = stopped.clone();
             let failure = failure.clone();
+            let silent = silent.clone();
             let _ = std::thread::Builder::new()
                 .name("ghostex-dictation-microphone".into())
                 .spawn(move || {
@@ -152,6 +156,7 @@ impl ActiveRecording {
                     for attempt in 0..=MAX_AUDIO_RESTARTS {
                         let capture_sender = sender.clone();
                         let restart = restart.clone();
+                        let silent = silent.clone();
                         let started = VoiceAudio::start(
                             false,
                             false,
@@ -161,6 +166,7 @@ impl ActiveRecording {
                             Box::new(move || {
                                 let _ = restart.send(());
                             }),
+                            Box::new(move || silent.store(true, Ordering::SeqCst)),
                         );
                         match started {
                             Ok(audio) => {
@@ -200,6 +206,13 @@ impl ActiveRecording {
                             return;
                         }
                     }
+                    // Restarted as often as it may be and stopped again: the recording ends here,
+                    // and what it has is transcribed.
+                    if let Ok(mut failure) = failure.lock() {
+                        *failure = Some(AudioStartError::Failed(
+                            MICROPHONE_KEPT_STOPPING.to_string(),
+                        ));
+                    }
                 });
         }
         let active = Self {
@@ -209,6 +222,7 @@ impl ActiveRecording {
             running,
             writer,
             failure,
+            silent,
         };
         match first_result.recv() {
             Ok(Ok(())) => Ok(active),
@@ -227,6 +241,11 @@ impl ActiveRecording {
 
     pub(crate) fn elapsed(&self) -> Duration {
         self.started.elapsed()
+    }
+
+    /// Whether the microphone gives only silence, once (the recording goes on).
+    pub(crate) fn take_silent(&self) -> bool {
+        self.silent.swap(false, Ordering::SeqCst)
     }
 
     /// A microphone failure after the start (the device went away), once.

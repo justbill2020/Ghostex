@@ -10,7 +10,7 @@ use ghostex_gx_chat_client::voice::{VoiceInbound, VoiceSink, VoiceSocket};
 use gpui::{Pixels, Task, WindowHandle};
 use serde_json::{Value, json};
 
-use super::audio::{AudioStartError, VoiceAudio};
+use super::audio::{AudioStartError, MICROPHONE_KEPT_STOPPING, SILENT_MICROPHONE, VoiceAudio};
 use super::endpoint::local_voice_endpoint;
 use super::memory::{VoiceMemory, VoiceMemoryState};
 use super::panel::VoicePanelWindow;
@@ -18,8 +18,13 @@ use crate::*;
 
 /// Whether this build has the Voice button.
 ///
-/// CDXC:VoiceMode 2026-10-20 WHY: hands-free voice needs echo cancellation, or the agent's own voice from the speakers interrupts it (gxserver's provider runs voice activity detection on everything the microphone hears). macOS has it in the voice-processing I/O unit (`native/macos/GpuiVoiceAudio.m`); Windows (its communications capture mode) and Linux (PipeWire's echo-cancel module) have no implementation here yet, so the button is hidden there rather than offered without it. The GPUI web build has its own stand-in that hides it.
-pub(crate) const VOICE_AGENT_AVAILABLE: bool = cfg!(target_os = "macos");
+/// CDXC:VoiceMode 2026-10-20 DECISION: User: "Please make the voice agent feature and the dictating feature and all of those features related to voice mode basically there on Linux and on Windows. They're not Mac only, you know what I mean?" The Voice button, the panel, Dictate, the voice memory and the settings are on macOS, Windows and Linux alike; this supersedes the macOS-only gate.
+/// CDXC:VoiceMode 2026-10-20 WHY: hands-free voice needs echo cancellation, or the agent's own voice from the speakers interrupts it (gxserver's provider runs voice activity detection on everything the microphone hears). macOS has it in the voice-processing I/O unit (`native/macos/GpuiVoiceAudio.m`); Windows and Linux run Sonora's AEC3 in-process on the audio this app plays (`audio_cpal.rs`, `aec.rs`), so it works without headphones and without system setup. The GPUI web build has its own stand-in that hides it.
+pub(crate) const VOICE_AGENT_AVAILABLE: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+));
 
 /// How long Hang up waits for gxserver's `ended` before letting go of the conversation itself.
 const HANG_UP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
@@ -186,6 +191,7 @@ enum VoiceMessage {
     AudioStarted,
     AudioFailed(AudioStartError),
     AudioDeviceChanged,
+    MicrophoneSilent,
 }
 
 impl GhostexGpuiApp {
@@ -377,15 +383,29 @@ impl GhostexGpuiApp {
                 self.voice_agent.problem = Some(VoiceProblem::new("microphone", error.message()));
             }
             VoiceMessage::AudioDeviceChanged => {
-                if let Some(link) = self.voice_agent.link.as_mut()
-                    && link.audio_restarts < MAX_AUDIO_RESTARTS
-                {
+                let Some(link) = self.voice_agent.link.as_mut() else {
+                    return;
+                };
+                if link.audio_restarts < MAX_AUDIO_RESTARTS {
                     link.audio_restarts += 1;
                     if let Ok(mut playback) = link.shared.playback.lock() {
                         playback.audio = None;
                     }
                     start_audio(link.socket.clone(), link.shared.clone());
+                } else {
+                    // The audio has stopped and is not started again: say so instead of going
+                    // quiet.
+                    link.socket.send_json(&json!({ "type": "end" }));
+                    self.end_voice_agent_link();
+                    self.voice_agent.phase = VoicePhase::Ended;
+                    self.voice_agent.problem =
+                        Some(VoiceProblem::new("microphone", MICROPHONE_KEPT_STOPPING));
                 }
+            }
+            VoiceMessage::MicrophoneSilent => {
+                self.push_voice_agent_row(VoiceRow::Announcement {
+                    text: SILENT_MICROPHONE.to_string(),
+                });
             }
         }
         self.sync_voice_agent_panel(cx);
@@ -612,7 +632,7 @@ impl GhostexGpuiApp {
     /// Brings the open conversation in line with the saved speed and voice, after any settings
     /// save (the panel's buttons, Settings › Voice agent, `ghostex settings set`).
     ///
-    /// CDXC:VoiceMode 2026-10-20 WHY: the speed is applied on this computer (the audio is stretched with its pitch kept, `native/macos/GpuiVoiceAudio.m`), at once and mid-sentence, for both providers; gxserver only learns the rate (`playbackRate`) so its playback clock stays right. A voice is sent to gxserver, which switches when the provider allows and otherwise answers that it speaks from the next conversation.
+    /// CDXC:VoiceMode 2026-10-20 WHY: the speed is applied on this computer (the audio is stretched with its pitch kept: `native/macos/GpuiVoiceAudio.m` on macOS, `stretch.rs` on Windows and Linux), at once and mid-sentence, for both providers; gxserver only learns the rate (`playbackRate`) so its playback clock stays right. A voice is sent to gxserver, which switches when the provider allows and otherwise answers that it speaks from the next conversation.
     pub(crate) fn apply_voice_agent_settings(
         &mut self,
         settings: &serde_json::Map<String, Value>,
@@ -745,6 +765,7 @@ fn start_audio(socket: Arc<VoiceSocket>, shared: Arc<LinkShared>) {
         .spawn(move || {
             let capture_shared = shared.clone();
             let changed_shared = shared.clone();
+            let silent_shared = shared.clone();
             let started = VoiceAudio::start(
                 true,
                 true,
@@ -763,6 +784,11 @@ fn start_audio(socket: Arc<VoiceSocket>, shared: Arc<LinkShared>) {
                     let _ = changed_shared
                         .sender
                         .unbounded_send(VoiceMessage::AudioDeviceChanged);
+                }),
+                Box::new(move || {
+                    let _ = silent_shared
+                        .sender
+                        .unbounded_send(VoiceMessage::MicrophoneSilent);
                 }),
             );
             let message = match started {

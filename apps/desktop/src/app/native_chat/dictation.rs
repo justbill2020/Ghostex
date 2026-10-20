@@ -24,14 +24,19 @@ use std::time::Duration;
 
 /// The one switch for both Dictate buttons, the chat box's and the terminal bar's.
 ///
-/// CDXC:VoiceMode 2026-10-20 DECISION: User: Dictate comes back on macOS with Grok dictation (xAI speech-to-text through gxserver, with the key kept on this computer) instead of the system speech recognizer; Windows stays hidden. This supersedes the 2026-10-09 decision ("if we can't fix this np release with mic button hidden on all os for now i'll test it later"), which hid both Dictate buttons on every OS because the Windows system recognizer never returned words.
+/// CDXC:VoiceMode 2026-10-20 DECISION: User: Dictate uses Grok dictation (xAI speech-to-text through gxserver, with the key kept on this computer) instead of the system speech recognizer. Later the same day the user said "Please make the voice agent feature and the dictating feature and all of those features related to voice mode basically there on Linux and on Windows. They're not Mac only, you know what I mean?" so Dictate is shown on macOS, Windows and Linux, superseding "Windows stays hidden" (and the 2026-10-09 decision that hid both Dictate buttons on every OS because the Windows system recognizer never returned words).
 /// CDXC:SessionChat 2026-10-09 SEE-ALSO: the phone's switch is `DICTATION_ENABLED` in `apps/mobile/app/src/chat/native/composer/useDictation.ts`.
 pub(crate) const DICTATION_ENABLED: bool = true;
 
-/// Whether this build can dictate: macOS only, where the app's own audio engine captures the
-/// microphone (`voice_agent/audio.rs`). Windows stays hidden by decision, Linux has no capture
-/// implementation, and the web build has no microphone, so the control is not drawn there.
-pub(super) const DICTATION: bool = DICTATION_ENABLED && cfg!(target_os = "macos");
+/// Whether this build can dictate: the desktop app on macOS, Windows and Linux, where the app's own
+/// audio captures the microphone (`voice_agent/audio.rs`). The web build has no microphone, so the
+/// control is not drawn there.
+pub(super) const DICTATION: bool = DICTATION_ENABLED
+    && cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    ));
 
 /// How long the pointer rests on the microphone before Transcribe previous is offered.
 const HOVER_DELAY: Duration = Duration::from_millis(350);

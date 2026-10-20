@@ -113,11 +113,11 @@ uuid = { version = "1", features = ["v4"] }
 web-time = "1"
 instant = "0.1"
 
-# CDXC:SessionChat 2026-10-08 WHY: the composer's Dictate control
-# (src/app/native_chat/dictation.rs) uses GPUI Kit's `speech` feature, the
-# microphone and the system speech recognizer, which macOS and Windows have.
-# Linux has no system recognizer and the feature would need the ALSA headers to
-# build there, so Linux builds leave it off and draw no Dictate control.
+# CDXC:SessionChat 2026-10-20 WHY: GPUI Kit's `speech` feature is the system
+# speech recognizer, which Dictate no longer uses (it records through
+# app/voice_agent/ and gxserver transcribes); only the unused fallback in
+# src/app/native_chat/dictation.rs still names it. Linux has no system
+# recognizer, so it stays off there, and Dictate works without it on every OS.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 gpui-component = { path = "../../.dependencies/gpui-component/crates/component", features = ["tree-sitter-languages", "speech"] }
 
@@ -128,6 +128,10 @@ gpui-component = { path = "../../.dependencies/gpui-component/crates/component",
 # CDXC:Notifications 2026-10-20 WHY: completion and copy sounds play in-process on Linux and Windows (app/helpers/os_cli/native_event_queue.rs; macOS uses afplay). rodio 0.20 sits on the cpal 0.15 that GPUI Kit's `speech` feature already builds on Windows; on Linux it needs the ALSA headers (libasound2-dev), which the release and remote-build Linux jobs already install, and libasound2/alsa-lib, which every Linux package already declares. Only the MP3 decoder is enabled.
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3"] }
+# CDXC:VoiceMode 2026-10-20 WHY: the voice conversation and Dictate on Windows and Linux (app/voice_agent/audio_cpal.rs) capture and play through the same cpal 0.15 rodio sits on, and cancel the agent's echo with Sonora, a pure-Rust port of WebRTC's audio processing (AEC3, noise suppression; BSD-3-Clause, about 0.5 MB, plain cargo build on every target). The system cancellers were rejected: Windows' communications mode depends on the driver, PipeWire's echo-cancel module needs the user to load it, and the C++ WebRTC builds need meson or a prebuilt download. Sonora is young, so it is pinned exactly; bump it on purpose and re-run the voice audio lab (docs/2026-10-20/voice-mode/windows-linux-phase1.md).
+cpal = "0.15"
+sonora = "=0.2.0"
+sonora-common-audio = "=0.2.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xinput"] }

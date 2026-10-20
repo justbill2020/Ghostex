@@ -1,7 +1,7 @@
 //! The web build's stand-in for the desktop's `app/voice_agent/`: the names the shared chat files
 //! call, with no microphone behind them.
 //!
-//! CDXC:VoiceMode 2026-10-20 WHY: the page has no echo-cancelled microphone path yet (the contract's `AudioWorklet` capture is not built), so it draws neither the Voice button (its header is its own) nor Dictate (`DICTATION` is macOS only); `native_chat/dictation.rs` still names the Dictate state it would record with.
+//! CDXC:VoiceMode 2026-10-20 WHY: the page has no echo-cancelled microphone path yet (the contract's `AudioWorklet` capture is not built), so it draws neither the Voice button (its header is its own) nor Dictate (`DICTATION` is desktop only); `native_chat/dictation.rs` still names the Dictate state it would record with.
 
 use std::time::Duration;
 

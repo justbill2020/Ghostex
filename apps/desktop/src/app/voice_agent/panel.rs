@@ -21,6 +21,7 @@ use super::conversation::{
 };
 use super::memory::{VoiceMemory, VoiceMemoryState};
 use crate::app::helpers::*;
+#[cfg(not(target_os = "windows"))]
 use crate::app::native_chat::child_window::move_child_window;
 use crate::app::render::workarea_header::workarea_header_bottom_y;
 use crate::app::window::settings_modal::catalog::settings_catalog;
@@ -295,7 +296,13 @@ impl GhostexGpuiApp {
         };
         let size = self.main_window_bounds.size;
         let frame = panel_frame(size, self.voice_agent.panel_place);
-        if move_child_window(panel.into(), self.parent_ns_view, frame, cx) {
+        if move_voice_panel_window(
+            panel.into(),
+            self.parent_ns_view,
+            self.main_window_bounds,
+            frame,
+            cx,
+        ) {
             self.voice_agent.panel_placed_for = Some(size);
         } else {
             // This platform cannot move a child window: open it again in place.
@@ -359,6 +366,61 @@ impl GhostexGpuiApp {
             memory_details_open: agent.memory_details_open,
         }
     }
+}
+
+/// Moves the open panel to `frame`, in the main window's content coordinates (`main` is the main
+/// window's bounds). False when this platform cannot move it.
+///
+/// CDXC:VoiceMode 2026-10-20 WHY: `move_child_window` cannot move a window on Windows, and its callers open the window again instead, which would end a drag of the panel at its first step. On Windows the panel is moved with `SetWindowPos` from a task, the Docs drawer's way (`native_docs/drawer.rs`); moving the main window already carries the panel with it (`workspace_windows/owned_windows.rs`).
+#[cfg(target_os = "windows")]
+fn move_voice_panel_window(
+    handle: gpui::AnyWindowHandle,
+    _: *mut std::ffi::c_void,
+    main: Bounds<Pixels>,
+    frame: Bounds<Pixels>,
+    cx: &mut gpui::App,
+) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
+    };
+    let Ok(Some((hwnd, scale))) = handle.update(cx, |_, window, _| {
+        match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+            RawWindowHandle::Win32(handle) => Some((handle.hwnd.get(), window.scale_factor())),
+            _ => None,
+        }
+    }) else {
+        return false;
+    };
+    let screen = Bounds::new(main.origin + frame.origin, frame.size);
+    // `SetWindowPos` delivers `WM_SIZE` at once, and GPUI's resize callback needs the app free.
+    cx.spawn(async move |_| {
+        let device = |value: Pixels| (f32::from(value) * scale).round() as i32;
+        unsafe {
+            SetWindowPos(
+                hwnd as *mut std::ffi::c_void,
+                std::ptr::null_mut(),
+                device(screen.origin.x),
+                device(screen.origin.y),
+                device(screen.size.width),
+                device(screen.size.height),
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+            );
+        }
+    })
+    .detach();
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_voice_panel_window(
+    handle: gpui::AnyWindowHandle,
+    parent: *mut std::ffi::c_void,
+    _: Bounds<Pixels>,
+    frame: Bounds<Pixels>,
+    cx: &mut gpui::App,
+) -> bool {
+    move_child_window(handle, parent, frame, cx)
 }
 
 /// How much a row says, so a growing caption counts as new content.

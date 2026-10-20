@@ -166,6 +166,13 @@ impl Dictate {
                         return false;
                     };
                     this.elapsed = active.elapsed();
+                    if active.take_silent() {
+                        // A warning only: a headset with a noise gate is silent too.
+                        cx.emit(DictateEvent::Failure {
+                            title: "The microphone is silent".to_string(),
+                            message: super::audio::SILENT_MICROPHONE.to_string(),
+                        });
+                    }
                     if let Some(error) = active.take_failure() {
                         // The microphone went away: what was recorded so far is transcribed.
                         cx.emit(DictateEvent::Failure {

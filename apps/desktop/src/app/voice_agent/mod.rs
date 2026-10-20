@@ -4,15 +4,24 @@
 //! Client contract: docs/2026-10-20/voice-mode/voice-agent-client-contract.md.
 //!
 //! - `endpoint.rs`: this computer's gxserver, which every voice socket talks to.
-//! - `audio.rs`: the microphone and speaker (macOS voice-processing I/O), `test_mic.rs` the
-//!   developer-only WAV feed that stands in for the microphone.
+//! - `audio.rs`: the microphone and speaker, one front over a `VoiceAudioBackend`
+//!   (`audio_backend.rs`): `audio_mac.rs` (AVAudioEngine with voice-processing I/O) on macOS,
+//!   `audio_cpal.rs` on Windows and Linux with `aec.rs` (echo cancellation) and `stretch.rs` (speed);
+//!   `test_mic.rs` the developer-only WAV feed that stands in for the microphone.
 //! - `conversation.rs`: the conversation the work area header's Voice button starts and ends.
 //! - `panel.rs`: the panel that shows it; `header_button.rs`: the Voice button.
 //! - `memory.rs`: the remembered last conversation the panel offers to continue.
 //! - `dictation.rs`: the chat box's and the terminal bar's Dictate: `recorder.rs` records to a
 //!   file first, then gxserver keeps and transcribes it (xAI speech-to-text).
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod aec;
 pub(crate) mod audio;
+mod audio_backend;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod audio_cpal;
+#[cfg(target_os = "macos")]
+mod audio_mac;
 pub(crate) mod conversation;
 pub(crate) mod dictation;
 pub(crate) mod endpoint;
@@ -20,6 +29,8 @@ pub(crate) mod header_button;
 pub(crate) mod memory;
 pub(crate) mod panel;
 pub(crate) mod recorder;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod stretch;
 mod test_mic;
 
 pub(crate) use conversation::{VOICE_AGENT_AVAILABLE, VoiceAgent};

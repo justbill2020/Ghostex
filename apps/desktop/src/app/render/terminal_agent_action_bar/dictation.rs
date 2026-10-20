@@ -18,10 +18,15 @@ use crate::app::voice_agent::{Dictate, DictateEvent, DictatePhase};
 use crate::*;
 use gpui::{AppContext as _, Entity, Subscription, Window};
 
-/// Whether this build can dictate: macOS only, like the chat box's Dictate (CDXC:VoiceMode
-/// 2026-10-20 DECISION in `native_chat/dictation.rs`). Off everywhere while `DICTATION_ENABLED` is.
-pub(super) const TERMINAL_DICTATION: bool =
-    crate::app::native_chat::dictation::DICTATION_ENABLED && cfg!(target_os = "macos");
+/// Whether this build can dictate: macOS, Windows and Linux, like the chat box's Dictate
+/// (CDXC:VoiceMode 2026-10-20 DECISION in `native_chat/dictation.rs`). Off everywhere while
+/// `DICTATION_ENABLED` is.
+pub(super) const TERMINAL_DICTATION: bool = crate::app::native_chat::dictation::DICTATION_ENABLED
+    && cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    ));
 
 /// The session the microphone is working for, and the subscription that pastes its result.
 pub(crate) struct TerminalDictation {
