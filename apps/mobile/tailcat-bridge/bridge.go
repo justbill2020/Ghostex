@@ -243,16 +243,7 @@ func Ping(token string, timeoutMs int) (int, error) {
 // whether it needs the cold rendezvous or the reuse probe.
 //
 // CDXC:RemotePairing 2026-10-20 WHY:
-// A reused forward gets a fresh loopback listener every time. iOS reclaims an
-// idle app's listening sockets while it is suspended
-// (developer.apple.com/forums/thread/85038: accept fails with ECONNABORTED and
-// clients get ECONNREFUSED), while the tunnel comes back and answers the reuse
-// probe, so handing out the old port made every reconnect after a long stay in
-// the background fail with "SSH refused the connection" until the app was
-// killed. The listener is free to recreate; only the tunnel's rendezvous is
-// worth reusing. Go's Accept retries ECONNABORTED without checking for Close,
-// so a dead listener's death cannot be detected and its Close may never
-// return: listeners are always closed off the registry lock.
+// A reused forward gets a fresh loopback listener on every call, and the replaced one keeps accepting for retiredListenerGrace so a concurrent caller handed its port can still dial it. iOS reclaims a suspended app's idle listening sockets (developer.apple.com/forums/thread/85038: clients then get ECONNREFUSED) while the tunnel comes back and answers the reuse probe, so handing out the old port made every reconnect after a long stay in the background fail with "SSH refused the connection" until the app was killed. A reclaimed listener cannot be detected instead: Go keeps it non-blocking, and XNU answers accept on a defunct non-blocking listener with EWOULDBLOCK and never fires its kqueue read filter, so the accept loop stays parked (and Close still returns at once). Only the tunnel's rendezvous is worth reusing.
 func ensureForward(id, token string, remotePort int) (f *forward, port int, reused bool, err error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -320,7 +311,7 @@ func stopLocked(id string) {
 	delete(forwards, id)
 	f.cancel()
 	close(f.closed)
-	go f.listener.Close()
+	_ = f.listener.Close()
 	// CDXC:RemotePairing 2026-09-14 WHY:
 	// A dead tunnel's WireGuard teardown must not hold the registry lock and block reconnects to every computer.
 	go f.client.Close()
